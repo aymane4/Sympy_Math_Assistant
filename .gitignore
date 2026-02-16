@@ -1,0 +1,11 @@
+# Secrets
+.env
+
+# Python Artifacts
+__pycache__/
+*.pyc
+
+# Exe build folders (The junk you saw)
+build/
+dist/
+*.spec
