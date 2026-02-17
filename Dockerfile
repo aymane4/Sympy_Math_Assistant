@@ -1,4 +1,5 @@
 # image dyal code (ina language)
+# PERF: this dockerfile is meant when we're going to change to web App
 FROM python:3.12.0-slim
 
 WORKDIR /mathapp
