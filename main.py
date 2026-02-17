@@ -8,29 +8,26 @@ from sympy import sympify, symbols, expand, factor, solve, latex, diff, integrat
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import threading
-import ctypes
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from the .env file
-load_dotenv()
-
 # --- CONFIGURATION ---
+load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_ID = "gemini-2.5-flash-lite" 
 
-if not API_KEY:
-    raise ValueError("API Key not found! Make sure you have a .env file with GEMINI_API_KEY inside.")
-
-
-
 class MathSnipper:
     def __init__(self):
-        self.client = genai.Client(api_key=API_KEY)
+        # 1. Setup API
+        if not API_KEY:
+            # Fallback (Delete this if you have .env working)
+            self.client = genai.Client(api_key="YOUR_KEY_HERE")
+        else:
+            self.client = genai.Client(api_key=API_KEY)
+            
         self.current_expr = None
         self.X = symbols('X')
         
-        # Hidden root window
         self.root = tk.Tk()
         self.root.withdraw() 
         self.is_snipping = False
@@ -42,14 +39,12 @@ class MathSnipper:
         if self.is_snipping: return
         self.is_snipping = True
         
-        # Create a full-screen transparent window
         self.snip_win = tk.Toplevel(self.root)
         self.snip_win.attributes('-fullscreen', True)
         self.snip_win.attributes('-alpha', 0.3)
         self.snip_win.attributes("-topmost", True)
         self.snip_win.config(cursor="cross")
         
-        # Grey overlay
         self.canvas = tk.Canvas(self.snip_win, cursor="cross", bg="black")
         self.canvas.pack(fill="both", expand=True)
         
@@ -60,6 +55,7 @@ class MathSnipper:
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.snip_win.update()
 
     def on_press(self, event):
         self.start_x = event.x
@@ -70,30 +66,53 @@ class MathSnipper:
         self.canvas.coords(self.rect, self.start_x, self.start_y, event.x, event.y)
 
     def on_release(self, event):
-        # Get coordinates
+        # 1. Coordinates
         x1, y1 = min(self.start_x, event.x), min(self.start_y, event.y)
         x2, y2 = max(self.start_x, event.x), max(self.start_y, event.y)
         
         self.snip_win.destroy()
         self.is_snipping = False
         
-        # Ignore accidental tiny clicks
         if (x2 - x1) < 10 or (y2 - y1) < 10: return
 
-        # Capture Screenshot (Now accurate thanks to DPI fix)
-        # We assume primary monitor. If multi-monitor behaves oddly, use 'all_screens=True'
-        img = PIL.ImageGrab.grab(bbox=(x1, y1, x2, y2), all_screens=True)
-        self.process_capture(img)
+        # 2. DPI FIX (Manual Calculation)
+        try:
+            root_w = self.root.winfo_screenwidth()
+            full_screen = PIL.ImageGrab.grab(all_screens=True)
+            real_w, _ = full_screen.size
+            scale = real_w / root_w
+            
+            # Apply Scale
+            bbox = (int(x1 * scale), int(y1 * scale), int(x2 * scale), int(y2 * scale))
+            img = full_screen.crop(bbox)
+            self.process_capture(img)
+        except Exception as e:
+            print(f"Screenshot Error: {e}")
+
+    def sanitize_math(self, raw_str):
+        """Cleans up the AI output to prevent SymPy crashes."""
+        # Remove Code Blocks
+        clean = raw_str.replace("```python", "").replace("```", "").replace("`", "").strip()
+        
+        # If AI returns "z = ...", take only the right side
+        if "=" in clean:
+            clean = clean.split("=")[-1].strip()
+            
+        # Fix common AI notation mistakes
+        clean = clean.replace("^", "**") # Python uses ** for power
+        clean = clean.replace("i", "I")  # SymPy needs capital I for imaginary
+        
+        return clean
 
     def process_capture(self, img):
-        """Sends image to Gemini Flash-Lite"""
         def worker():
             try:
-                # 1. Ask Gemini for Math AND a suggestion
+                # Prompt optimized for Python Syntax
                 prompt = (
-                    "OCR this math image into a raw SymPy string (use X and I). "
-                    "Then, on a new line, write one word suggesting the best action: "
-                    "SOLVE, EXPAND, FACTOR, or GRAPH."
+                    "OCR this math. Output ONLY the raw Python math string. "
+                    "Use 'X' for variables and 'I' for imaginary numbers. "
+                    "Do NOT write 'z =' or 'y =', just the expression."
+                    "On a new line, suggest one action: SOLVE, EXPAND, FACTOR."
                 )
                 
                 response = self.client.models.generate_content(
@@ -104,22 +123,20 @@ class MathSnipper:
                 text = response.text.strip()
                 lines = text.split('\n')
                 
-                # Parse output
-                math_str = lines[0].replace("```python", "").replace("```", "").strip()
-                # Clean any lingering markdown code block syntax
-                math_str = math_str.replace("`", "")
-                
+                # SANITIZE THE INPUT
+                math_str = self.sanitize_math(lines[0])
                 suggestion = lines[-1].strip().upper() if len(lines) > 1 else "ANALYZE"
                 
-                # Convert to SymPy
-                self.current_expr = sympify(math_str)
+                print(f"Debug - Cleaned Math: {math_str}")
                 
-                # Open UI in main thread
+                self.current_expr = sympify(math_str)
                 self.root.after(0, lambda: self.show_dashboard(img, suggestion))
                 
             except Exception as e:
-                print(e)
-                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed: {e}"))
+                print(f"Error: {e}")
+                # Fixed the NameError bug here
+                err_msg = str(e)
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Failed: {err_msg}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -128,84 +145,63 @@ class MathSnipper:
         dash.title("Math Lens Dashboard")
         dash.geometry("1000x600")
         
-        # --- LEFT: Image & Suggestions ---
+        # Left Panel
         left_frame = tk.Frame(dash, width=300, bg="#f0f0f0")
         left_frame.pack(side="left", fill="y", padx=10, pady=10)
         
-        # Show Snip (Resize for display)
         img_disp = img.copy()
         img_disp.thumbnail((280, 280))
         photo = PIL.ImageTk.PhotoImage(img_disp)
         lbl_img = tk.Label(left_frame, image=photo, bg="#f0f0f0")
-        lbl_img.image = photo # Keep reference
+        lbl_img.image = photo 
         lbl_img.pack(pady=20)
         
-        tk.Label(left_frame, text="AI Suggestion:", bg="#f0f0f0", font=("Arial", 10)).pack()
+        tk.Label(left_frame, text="AI Suggestion:", bg="#f0f0f0").pack()
         tk.Label(left_frame, text=suggestion, bg="lightgreen", font=("Arial", 14, "bold"), width=15).pack(pady=5)
 
-        # --- RIGHT: Math Board ---
+        # Right Panel
         right_frame = tk.Frame(dash, bg="white")
         right_frame.pack(side="right", fill="both", expand=True)
         
-        # Matplotlib Figure for LaTeX
         self.fig, self.ax = plt.subplots(figsize=(6, 3))
         self.canvas_widget = FigureCanvasTkAgg(self.fig, master=right_frame)
         self.canvas_widget.get_tk_widget().pack(fill="x", padx=10, pady=10)
         self.render_latex(self.current_expr, "Detected Expression")
         
-        # Buttons
         btn_frame = tk.Frame(right_frame, bg="white")
         btn_frame.pack(pady=10)
         
-        # Define Operations
         def run_op(func, name):
             try:
-                if func == solve:
-                    res = solve(self.current_expr, self.X)
-                elif func == diff:
-                    res = diff(self.current_expr, self.X)
-                else:
-                    res = func(self.current_expr)
+                if func == solve: res = solve(self.current_expr, self.X)
+                elif func == diff: res = diff(self.current_expr, self.X)
+                else: res = func(self.current_expr)
                 
                 self.render_latex(res, f"Result: {name}")
                 self.txt_out.delete("1.0", tk.END)
                 self.txt_out.insert("1.0", str(res))
-            except Exception as e:
-                messagebox.showerror("Error", str(e))
+            except Exception as e: messagebox.showerror("Error", str(e))
 
         def do_graph():
-            try:
-                sympy.plot(self.current_expr, show=True)
-            except:
-                messagebox.showerror("Graph Error", "Cannot graph this expression.")
+            try: sympy.plot(self.current_expr, show=True)
+            except: messagebox.showerror("Graph Error", "Cannot graph this expression.")
 
-        # Create Buttons
-        ops = [
-            ("EXPAND", expand), ("FACTOR", factor), 
-            ("SOLVE (X=0)", solve), ("DERIVATIVE", diff), ("INTEGRATE", integrate)
-        ]
-        
+        ops = [("EXPAND", expand), ("FACTOR", factor), ("SOLVE (X=0)", solve), ("DERIVATIVE", diff), ("INTEGRATE", integrate)]
         for name, func in ops:
-            tk.Button(btn_frame, text=name, command=lambda f=func, n=name: run_op(f, n), 
-                      font=("Segoe UI", 10), bg="#e1e1e1", width=12).pack(side="left", padx=5)
+            tk.Button(btn_frame, text=name, command=lambda f=func, n=name: run_op(f, n), bg="#e1e1e1").pack(side="left", padx=5)
+        tk.Button(btn_frame, text="GRAPH", command=do_graph, bg="orange").pack(side="left", padx=5)
 
-        tk.Button(btn_frame, text="GRAPH", command=do_graph, bg="orange", width=10).pack(side="left", padx=5)
-
-        # Text Result Area
         self.txt_out = tk.Text(right_frame, height=8, font=("Consolas", 11))
         self.txt_out.pack(fill="both", expand=True, padx=20, pady=20)
 
     def render_latex(self, expr, title):
         self.ax.clear()
         self.ax.axis("off")
-        # Render Math
         self.ax.text(0.5, 0.5, f"${latex(expr)}$", ha='center', va='center', fontsize=20)
         self.ax.set_title(title, fontsize=10, color="gray")
         self.canvas_widget.draw()
 
 if __name__ == "__main__":
     app = MathSnipper()
-    # Register Hotkey
     keyboard.add_hotkey('shift+alt+q', app.start_snip)
-    # Start loop
     app.root.mainloop()
