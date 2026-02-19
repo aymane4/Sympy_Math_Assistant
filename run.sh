@@ -1,4 +1,9 @@
 #!/bin/bash
+#venv handler
+if [ ! -f venv/]; then
+  python -m venv venv
+  .\venv\Scripts\Activate
+fi
 # my fancy wait
 wait_dots() {
   local i=0
