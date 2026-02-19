@@ -4,3 +4,8 @@ matplotlib
 Pillow
 keyboard
 python-dotenv
+pix2tex
+latex2sympy2
+torch
+torchvision
+transformers
