@@ -20,10 +20,21 @@ LatexOCR = None
 latex2sympy = None
 
 # --- CONFIG & DPI FIX ---
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    ctypes.windll.user32.SetProcessDPIAware()
+def configure_dpi_awareness():
+    """Enable crisp UI scaling on Windows and no-op on other platforms."""
+    if sys.platform != "win32":
+        return
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+configure_dpi_awareness()
 
 # --- COLORS & THEME ---
 THEME = {
